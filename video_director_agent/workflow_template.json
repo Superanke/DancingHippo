@@ -42,7 +42,7 @@
   },
   "153:114": {
     "inputs": {
-      "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+      "model_name": "ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
     },
     "class_type": "LatentUpscaleModelLoader",
     "_meta": {
@@ -517,7 +517,7 @@
   },
   "153:134": {
     "inputs": {
-      "ckpt_name": "LTX23_audio_vae_bf16.safetensors"
+      "ckpt_name": "ltx-2.3-22b-distilled.safetensors"
     },
     "class_type": "LTXVAudioVAELoader",
     "_meta": {
@@ -526,7 +526,7 @@
   },
   "153:146": {
     "inputs": {
-      "unet_name": "ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v3.safetensors",
+      "unet_name": "ltx2.3\\ltx-2.3-22b-distilled_transformer_only_fp8_input_scaled_v2.safetensors",
       "weight_dtype": "fp8_e4m3fn"
     },
     "class_type": "UNETLoader",
@@ -536,7 +536,7 @@
   },
   "153:143": {
     "inputs": {
-      "lora_name": "ltx-2.3-22b-distilled-lora-384.safetensors",
+      "lora_name": "ltx\\ltx-2.3-22b-distilled-lora-384.safetensors",
       "strength_model": 0.6,
       "model": [
         "153:146",
@@ -551,7 +551,7 @@
   "153:147": {
     "inputs": {
       "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
-      "ckpt_name": "ltx-2.3_text_projection_bf16.safetensors",
+      "ckpt_name": "ltx-2.3-22b-distilled.safetensors",
       "device": "default"
     },
     "class_type": "LTXAVTextEncoderLoader",

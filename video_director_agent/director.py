@@ -2,11 +2,67 @@
 
 import json
 import logging
-import ollama
+import ollama_client
 
-from config import OLLAMA_MODEL_CREATIVE, SCENE_MIN_SEC, SCENE_MAX_SEC, SCENE_SWEET_SPOT_SEC
+from config import (
+    OLLAMA_MODEL_CREATIVE, OUTPUT_LANGUAGE,
+    SCENE_MIN_SEC, SCENE_MAX_SEC, SCENE_SWEET_SPOT_SEC,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _language_requirement() -> str:
+    """Return the configured creative output language requirement."""
+    if OUTPUT_LANGUAGE == "simplified_chinese":
+        return (
+            "FINAL FILM LANGUAGE REQUIREMENT: The final film's spoken dialogue and narration "
+            "must be natural Simplified Chinese. The user's brief or script may be written in "
+            "any language, but the words characters speak in the final video must be Simplified "
+            "Chinese. If source dialogue is in another language, translate or adapt it into "
+            "natural Simplified Chinese while preserving the meaning and character intent. "
+            "Keep all JSON keys exactly as specified in English. Creative values such as "
+            "character descriptions, voice descriptions, scene descriptions, dialogue, action, "
+            "audio, settings, lighting, mood, and continuity notes should be written in natural "
+            "Simplified Chinese. This overrides any instruction to preserve source-language "
+            "dialogue exactly."
+        )
+    if OUTPUT_LANGUAGE == "english":
+        return (
+            "FINAL FILM LANGUAGE REQUIREMENT: The final film's spoken dialogue and narration "
+            "must be natural English. The user's brief or script may be written in any language, "
+            "but the words characters speak in the final video must be English. If source "
+            "dialogue is in another language, translate or adapt it into natural spoken English "
+            "while preserving the meaning and character intent. Keep all JSON keys exactly as "
+            "specified in English. Creative values such as character descriptions, voice "
+            "descriptions, scene descriptions, dialogue, action, audio, settings, lighting, "
+            "mood, and continuity notes should be written in English. This overrides any "
+            "instruction to preserve source-language dialogue exactly."
+        )
+    return ""
+
+
+def _language_messages() -> list[dict]:
+    requirement = _language_requirement()
+    if not requirement:
+        return []
+    return [{"role": "system", "content": requirement}]
+
+
+def _dialogue_instruction() -> str:
+    if OUTPUT_LANGUAGE == "simplified_chinese":
+        return (
+            "make the spoken words natural Simplified Chinese. If the source dialogue below "
+            "is not Chinese, translate or adapt it into Chinese; do not include the "
+            "source-language line in the final prompt"
+        )
+    if OUTPUT_LANGUAGE == "english":
+        return (
+            "make the spoken words natural English. If the source dialogue below is not "
+            "English, translate or adapt it into English; do not include the source-language "
+            "line in the final prompt"
+        )
+    return "include these EXACT words in quotes — do NOT summarize or shorten"
 
 # ── System prompts ─────────────────────────────────────────────────────────
 
@@ -166,6 +222,53 @@ FORMAT:
 - Respond with ONLY the prompt text"""
 
 
+DIRECTOR_REWRITE_SYSTEM = """You are a senior film director and editor doing a story-tightening pass BEFORE storyboard generation.
+
+Your job is to make the scene plan more cinematic, more coherent, and more efficient without changing the user's core idea.
+
+You are optimizing for:
+- story momentum: every shot must reveal, escalate, or resolve something
+- compactness: remove repeated beats and redundant establishing shots
+- continuity: character identity, wardrobe, location, lighting, and props stay consistent
+- shot variety: avoid repeating the same camera distance or angle unless intentionally rhythmic
+- production realism: each scene is one clear filmable moment for an AI video model
+
+Rules:
+- Keep all JSON keys in English.
+- Preserve the character IDs already used in characters_in_scene.
+- Preserve the same schema for every scene.
+- Do not add impossible multi-action scenes. One scene = one continuous shot.
+- If the source is a script, preserve the meaning of every important dialogue beat. You may split, translate, or tighten dialogue only when required by the final film language instruction.
+- If a target duration exists, keep the revised total close to that duration.
+
+Respond ONLY with valid JSON in this exact shape:
+{
+  "director_notes": {
+    "story_grade": "tight|okay|loose",
+    "logline": "one sentence summary of the tightened film",
+    "problems_fixed": ["specific issue fixed", "..."],
+    "pacing_notes": "how the revised scene order improves momentum",
+    "continuity_strategy": "what must stay consistent across scenes"
+  },
+  "scenes": [
+    {
+      "scene_number": 1,
+      "description": "...",
+      "characters_in_scene": ["..."],
+      "dialogue": "...",
+      "action_description": "...",
+      "action_seconds": 2,
+      "shot_type": "...",
+      "mood": "...",
+      "audio_description": "...",
+      "setting_description": "...",
+      "lighting_description": "...",
+      "continuity_notes": "..."
+    }
+  ]
+}"""
+
+
 # ── Words-Per-Minute Profiles ──────────────────────────────────────────────
 
 WPM_PROFILES = {
@@ -213,10 +316,14 @@ def calc_scene_duration(scene: dict, wpm: int) -> int:
     import re
     clean_dialogue = re.sub(r'\([^)]*\)', '', dialogue)
     clean_dialogue = clean_dialogue.replace('"', '').replace("'", "")
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', clean_dialogue))
     word_count = len(clean_dialogue.split()) if clean_dialogue.strip() else 0
 
     # Dialogue time
-    dialogue_seconds = (word_count / wpm) * 60 if word_count > 0 else 0
+    if chinese_chars > 0:
+        dialogue_seconds = chinese_chars / 4
+    else:
+        dialogue_seconds = (word_count / wpm) * 60 if word_count > 0 else 0
 
     # Action time (non-dialogue physical actions)
     action_seconds = scene.get("action_seconds", 2)
@@ -326,7 +433,7 @@ def _chat_with_auto_tokens(model: str, messages: list, base_options: dict,
         opts = {**base_options, "num_predict": num_predict, "num_ctx": max(num_predict, 32768)}
         log.info("  LLM call: %s, num_predict=%d", model, num_predict)
 
-        response = ollama.chat(model=model, messages=messages, options=opts)
+        response = ollama_client.chat(model=model, messages=messages, options=opts)
         raw = response["message"]["content"].strip()
 
         if not raw:
@@ -362,24 +469,15 @@ def parse_script(script_text: str) -> list[dict]:
         model=OLLAMA_MODEL_CREATIVE,
         messages=[
             {"role": "system", "content": SCRIPT_PARSE_SYSTEM},
+            *_language_messages(),
             {"role": "user", "content": f"Parse this script into scenes:\n\n{script_text}"},
         ],
         base_options={"temperature": 0.4},
     )
     scenes = _parse_json(raw, retries=2, brief=script_text)
 
-    # Calculate durations from dialogue + action
-    for s in scenes:
-        s["duration_seconds"] = calc_scene_duration(s, wpm)
-        s["status"] = "pending"
-
-        dialogue = s.get("dialogue", "")
-        word_count = len(dialogue.replace('"', '').split()) if dialogue else 0
-        action_sec = s.get("action_seconds", 0)
-        log.info("  Scene %d: %d words dialogue (%.1fs @ %dwpm) + %ds action = %ds",
-                 s["scene_number"], word_count,
-                 (word_count / wpm * 60) if word_count else 0,
-                 wpm, action_sec, s["duration_seconds"])
+    scenes = _apply_scene_timing(scenes, wpm, "")
+    scenes = _director_rewrite_pass(script_text, scenes, wpm, None, "script")
 
     total_dur = sum(s["duration_seconds"] for s in scenes)
     log.info("Script parsed: %d scenes, total ~%ds (%.1f min)", len(scenes), total_dur, total_dur / 60)
@@ -394,12 +492,18 @@ def _extract_target_duration(brief: str) -> int | None:
     # Match patterns like "5 minute", "10 min", "3-minute", "120 seconds", "2 hour"
     m = re.search(r'(\d+)\s*[-]?\s*(minute|min|second|sec|hour|hr)s?', brief, re.IGNORECASE)
     if not m:
+        m = re.search(r'(\d+)\s*(秒|分钟|分|小时)', brief)
+    if not m:
         return None
     val = int(m.group(1))
     unit = m.group(2).lower()
     if unit in ("hour", "hr"):
         return val * 3600
     elif unit in ("minute", "min"):
+        return val * 60
+    elif unit == "小时":
+        return val * 3600
+    elif unit in ("分钟", "分"):
         return val * 60
     else:
         return val
@@ -442,6 +546,7 @@ After your thinking, output ONLY the final JSON array of scenes."""
         model=OLLAMA_MODEL_CREATIVE,
         messages=[
             {"role": "system", "content": BREAKDOWN_SYSTEM},
+            *_language_messages(),
             {"role": "user", "content": planning_prompt},
         ],
         base_options={"temperature": 0.7},
@@ -449,17 +554,7 @@ After your thinking, output ONLY the final JSON array of scenes."""
     scenes = _parse_json(raw, retries=2, brief=brief)
 
     # Phase 2: Calculate duration from dialogue + action
-    for s in scenes:
-        s["duration_seconds"] = calc_scene_duration(s, wpm)
-
-        dialogue = s.get("dialogue", "")
-        word_count = len(dialogue.replace('"', '').split()) if dialogue else 0
-        action_sec = s.get("action_seconds", 0)
-        log.info("  Scene %d: %d words dialogue (%.1fs @ %dwpm) + %ds action = %ds",
-                 s["scene_number"], word_count,
-                 (word_count / wpm * 60) if word_count else 0,
-                 wpm, action_sec, s["duration_seconds"])
-        s["status"] = "pending"
+    scenes = _apply_scene_timing(scenes, wpm, "")
 
     total_dur_planned = sum(s["duration_seconds"] for s in scenes)
     log.info("Planned %d scenes, total ~%ds (%.1f min)", len(scenes), total_dur_planned, total_dur_planned / 60)
@@ -505,6 +600,7 @@ Output the COMPLETE rewritten JSON array of ALL scenes. No preamble."""
             model=OLLAMA_MODEL_CREATIVE,
             messages=[
                 {"role": "system", "content": BREAKDOWN_SYSTEM},
+                *_language_messages(),
                 {"role": "user", "content": planning_prompt},
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": rewrite_prompt},
@@ -513,14 +609,7 @@ Output the COMPLETE rewritten JSON array of ALL scenes. No preamble."""
         )
         try:
             scenes = _parse_json(raw, retries=1, brief=brief)
-            for s in scenes:
-                s["duration_seconds"] = calc_scene_duration(s, wpm)
-                s["status"] = "pending"
-                dialogue = s.get("dialogue", "")
-                word_count = len(dialogue.replace('"', '').split()) if dialogue else 0
-                action_sec = s.get("action_seconds", 0)
-                log.info("  Scene %d (rewrite): %d words dialogue, %ds",
-                         s["scene_number"], word_count, s["duration_seconds"])
+            scenes = _apply_scene_timing(scenes, wpm, " (rewrite)")
 
             total_dur_planned = sum(s["duration_seconds"] for s in scenes)
             log.info("After rewrite: %d scenes, total ~%ds (%.1f min)",
@@ -529,6 +618,7 @@ Output the COMPLETE rewritten JSON array of ALL scenes. No preamble."""
             log.warning("Rewrite parse failed, keeping previous plan: %s", e)
             break
 
+    scenes = _director_rewrite_pass(brief, scenes, wpm, target_dur, "brief")
     return scenes
 
 
@@ -536,6 +626,7 @@ Output the COMPLETE rewritten JSON array of ALL scenes. No preamble."""
 _current_characters = {}
 _current_voices = {}
 _current_style = ""
+_current_director_notes = {}
 
 
 def get_character_descriptions() -> dict:
@@ -551,6 +642,11 @@ def get_voice_descriptions() -> dict:
 def get_style_anchor() -> str:
     """Get the style anchor from the most recent breakdown."""
     return _current_style
+
+
+def get_director_notes() -> dict:
+    """Get director rewrite notes from the most recent breakdown."""
+    return _current_director_notes
 
 
 def _sanitize_scene(s: dict) -> dict:
@@ -670,20 +766,41 @@ def _try_parse_json(raw: str):
     except json.JSONDecodeError:
         pass
 
+    repaired = _repair_premature_root_close(fixed)
+    if repaired != fixed:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
     # Give up — raise the original error
     return json.loads(raw)
 
 
-def _parse_json(raw: str, retries: int = 2, brief: str = "") -> list[dict]:
-    """Parse JSON from Gemma output, retrying on failure.
+def _repair_premature_root_close(raw: str) -> str:
+    decoder = json.JSONDecoder()
+    candidate = raw
+    for _ in range(3):
+        try:
+            _, end_index = decoder.raw_decode(candidate)
+        except json.JSONDecodeError:
+            return candidate
 
-    Handles both formats:
-    - Plain array: [scene1, scene2, ...]
-    - Dict with characters: {"characters": {...}, "scenes": [...]}
-    """
-    global _current_characters, _current_voices, _current_style
+        tail = candidate[end_index:].lstrip()
+        if not tail.startswith(","):
+            return candidate
 
-    # Strip markdown fences if present
+        close_index = end_index - 1
+        while close_index >= 0 and candidate[close_index].isspace():
+            close_index -= 1
+        if close_index < 0 or candidate[close_index] != "}":
+            return candidate
+
+        candidate = candidate[:close_index] + candidate[close_index + 1:]
+    return candidate
+
+
+def _extract_json_text(raw: str) -> str:
     if "```" in raw:
         lines = raw.split("\n")
         inside = False
@@ -696,12 +813,10 @@ def _parse_json(raw: str, retries: int = 2, brief: str = "") -> list[dict]:
                 cleaned.append(line)
         raw = "\n".join(cleaned)
 
-    # Find JSON start
     first_brace = raw.find("{")
     first_bracket = raw.find("[")
     if first_brace >= 0 and (first_bracket < 0 or first_brace < first_bracket):
         raw = raw[first_brace:]
-        # Find matching close
         end = raw.rfind("}") + 1
         if end > 0:
             raw = raw[:end]
@@ -710,6 +825,102 @@ def _parse_json(raw: str, retries: int = 2, brief: str = "") -> list[dict]:
         end = raw.rfind("]") + 1
         if end > 0:
             raw = raw[:end]
+    return raw
+
+
+def _apply_scene_timing(scenes: list[dict], wpm: int, label: str) -> list[dict]:
+    for s in scenes:
+        s["duration_seconds"] = calc_scene_duration(s, wpm)
+        s["status"] = "pending"
+
+        dialogue = s.get("dialogue", "")
+        word_count = len(dialogue.replace('"', '').split()) if dialogue else 0
+        action_sec = s.get("action_seconds", 0)
+        log.info("  Scene %d%s: %d words dialogue + %ds action = %ds",
+                 s["scene_number"], label, word_count, action_sec, s["duration_seconds"])
+    return scenes
+
+
+def _parse_director_rewrite(raw: str) -> tuple[list[dict], dict]:
+    parsed = _try_parse_json(_extract_json_text(raw))
+    if not isinstance(parsed, dict):
+        raise ValueError("Director rewrite must return a JSON object")
+    scenes = parsed.get("scenes")
+    if not isinstance(scenes, list):
+        raise ValueError("Director rewrite response has no scenes list")
+    notes = parsed.get("director_notes", {})
+    if not isinstance(notes, dict):
+        notes = {"pacing_notes": str(notes)}
+    return [_sanitize_scene(scene) for scene in scenes], notes
+
+
+def _director_rewrite_pass(
+    brief: str,
+    scenes: list[dict],
+    wpm: int,
+    target_dur: int | None,
+    source_kind: str,
+) -> list[dict]:
+    """Run one story-tightening pass and store director notes."""
+    global _current_director_notes
+
+    scene_json = json.dumps(scenes, ensure_ascii=False, indent=2)
+    target_text = (
+        f"Target duration: {target_dur} seconds. Keep the revised total close to this."
+        if target_dur else
+        "No fixed target duration. Prefer tight, complete storytelling over adding length."
+    )
+    rewrite_prompt = f"""SOURCE KIND: {source_kind}
+USER BRIEF OR SCRIPT:
+{brief}
+
+{target_text}
+
+CURRENT SCENE PLAN:
+{scene_json}
+
+Perform one director rewrite pass. Remove or merge redundant beats, strengthen cause-and-effect, improve shot progression, and preserve continuity anchors. Return the revised JSON object only."""
+
+    try:
+        log.info("Director rewrite pass: tightening story and continuity...")
+        raw = _chat_with_auto_tokens(
+            model=OLLAMA_MODEL_CREATIVE,
+            messages=[
+                {"role": "system", "content": DIRECTOR_REWRITE_SYSTEM},
+                *_language_messages(),
+                {"role": "user", "content": rewrite_prompt},
+            ],
+            base_options={"temperature": 0.45},
+            start_tokens=8192,
+            max_tokens=32768,
+        )
+        revised_scenes, notes = _parse_director_rewrite(raw)
+        revised_scenes = _apply_scene_timing(revised_scenes, wpm, " (director pass)")
+        _current_director_notes = notes
+        log.info("Director rewrite complete: %s", notes.get("story_grade", "ungraded"))
+        return revised_scenes
+    except Exception as exc:
+        log.warning("Director rewrite failed; keeping original scene plan: %s", exc)
+        _current_director_notes = {
+            "story_grade": "unchecked",
+            "logline": "",
+            "problems_fixed": [],
+            "pacing_notes": f"Director rewrite failed: {exc}",
+            "continuity_strategy": "Use original continuity notes.",
+        }
+        return scenes
+
+
+def _parse_json(raw: str, retries: int = 2, brief: str = "") -> list[dict]:
+    """Parse JSON from Gemma output, retrying on failure.
+
+    Handles both formats:
+    - Plain array: [scene1, scene2, ...]
+    - Dict with characters: {"characters": {...}, "scenes": [...]}
+    """
+    global _current_characters, _current_voices, _current_style
+
+    raw = _extract_json_text(raw)
 
     try:
         parsed = _try_parse_json(raw)
@@ -760,7 +971,7 @@ def _parse_json(raw: str, retries: int = 2, brief: str = "") -> list[dict]:
 
     except (json.JSONDecodeError, ValueError) as e:
         if retries <= 0:
-            raise ValueError(f"Gemma returned invalid JSON after retries: {e}\nRaw: {raw[:500]}")
+            raise ValueError(f"LLM returned invalid JSON after retries: {e}\nRaw: {raw[:500]}")
         # Log the area around the error for debugging
         if isinstance(e, json.JSONDecodeError):
             pos = e.pos if hasattr(e, 'pos') else 0
@@ -771,11 +982,12 @@ def _parse_json(raw: str, retries: int = 2, brief: str = "") -> list[dict]:
                         raw[start:pos], raw[pos:end])
         else:
             log.warning("JSON parse failed: %s", e)
-        log.info("Retrying Gemma call...")
-        response = ollama.chat(
+        log.info("Retrying LLM call...")
+        response = ollama_client.chat(
             model=OLLAMA_MODEL_CREATIVE,
             messages=[
                 {"role": "system", "content": BREAKDOWN_SYSTEM},
+                *_language_messages(),
                 {"role": "user", "content": brief},
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": 'That was not valid JSON. Respond with ONLY the JSON object: {"characters": {...}, "scenes": [...]}. No markdown fences.'},
@@ -865,7 +1077,7 @@ def write_prompt(scene: dict, prev_scene: dict = None, brief: str = "") -> str:
     # DIALOGUE — exact words
     dialogue = scene.get("dialogue", "")
     if dialogue:
-        context += f"DIALOGUE (include these EXACT words in quotes — do NOT summarize or shorten):\n{dialogue}\n\n"
+        context += f"DIALOGUE ({_dialogue_instruction()}):\n{dialogue}\n\n"
     else:
         context += "DIALOGUE: None — this is a visual/ambient scene.\n\n"
 
@@ -886,10 +1098,11 @@ def write_prompt(scene: dict, prev_scene: dict = None, brief: str = "") -> str:
 - Embed all dialogue word-for-word in quotes within the action
 - 300-500 words. Be EXHAUSTIVELY descriptive. Lazy/short prompts make bad video."""
 
-    response = ollama.chat(
+    response = ollama_client.chat(
         model=OLLAMA_MODEL_CREATIVE,
         messages=[
             {"role": "system", "content": PROMPT_WRITER_SYSTEM},
+            *_language_messages(),
             {"role": "user", "content": context},
         ],
         options={
@@ -922,7 +1135,7 @@ Attempt number: {attempt} of 3
 Write a NEW LTX 2.3 prompt for this scene that addresses the failure.
 Respond with ONLY the new prompt text."""
 
-    response = ollama.chat(
+    response = ollama_client.chat(
         model=OLLAMA_MODEL_CREATIVE,
         messages=[
             {"role": "system", "content": PROMPT_WRITER_SYSTEM},

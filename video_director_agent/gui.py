@@ -21,6 +21,13 @@ def _restart_ollama(log):
     """Kill and restart Ollama to ensure clean state."""
     import subprocess
     import time
+    from urllib.parse import urlparse
+    from config import OLLAMA_HOST
+
+    host = urlparse(OLLAMA_HOST).hostname
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        log.info("Skipping Ollama restart for remote host: %s", OLLAMA_HOST)
+        return
 
     log.info("Restarting Ollama...")
     # Kill any running Ollama processes

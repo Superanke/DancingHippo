@@ -6,12 +6,10 @@ video_director_agent/output/
 video_director_agent/logs/
 
 # Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo
-
-# I2V template (user must export their own — optional)
-video_director_agent/i2v_template.json
 
 # Test files
 video_director_agent/test_breakdown.json

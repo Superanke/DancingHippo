@@ -35,6 +35,7 @@ from comfyui_client import (
 import director
 import evaluator
 import assembler
+import ollama_client
 
 # ── Logging ────────────────────────────────────────────────────────────────
 
@@ -91,9 +92,8 @@ def _unload_model(log):
     """Unload the heavy creative model from VRAM to free it for ComfyUI."""
     from config import OLLAMA_MODEL_CREATIVE
     try:
-        import ollama as _ollama
         log.info("Unloading %s from VRAM to free GPU for ComfyUI...", OLLAMA_MODEL_CREATIVE)
-        _ollama.generate(model=OLLAMA_MODEL_CREATIVE, prompt="", keep_alive=0)
+        ollama_client.generate(model=OLLAMA_MODEL_CREATIVE, prompt="", keep_alive=0)
         log.info("Model unloaded.")
     except Exception as e:
         log.warning("Could not unload model: %s (not critical)", e)
@@ -132,8 +132,7 @@ def preflight(client: ComfyUIClient, log):
 
     # Check Ollama model
     try:
-        import ollama as _ollama
-        models = _ollama.list()
+        models = ollama_client.list_models()
         model_names = [m.model for m in models.models]
         found = any(OLLAMA_MODEL in name for name in model_names)
         if not found:
@@ -195,7 +194,12 @@ def run(brief: str, project_name: str, log, is_script: bool = False, lazy: bool 
         state["scenes"] = scenes
         state["total_scenes"] = len(scenes)
         # Store character + voice + style descriptions from breakdown
-        from director import get_character_descriptions, get_voice_descriptions, get_style_anchor
+        from director import (
+            get_character_descriptions,
+            get_voice_descriptions,
+            get_style_anchor,
+            get_director_notes,
+        )
         chars = get_character_descriptions()
         if chars:
             state["characters"] = chars
@@ -208,6 +212,10 @@ def run(brief: str, project_name: str, log, is_script: bool = False, lazy: bool 
         if style:
             state["style"] = style
             log.info("Stored style anchor: %s", style[:80])
+        director_notes = get_director_notes()
+        if director_notes:
+            state["director_notes"] = director_notes
+            log.info("Stored director rewrite notes.")
         save_state(state)
         log.info("Planned %d scenes.", len(scenes))
 
@@ -220,6 +228,8 @@ def run(brief: str, project_name: str, log, is_script: bool = False, lazy: bool 
 
     project_dir = os.path.join(os.path.dirname(__file__), "output", project_name)
     characters = state.get("characters", {})
+    character_references = state.get("character_references", {})
+    project_references = state.get("project_references", [])
 
     # Restore character + voice + style descriptions into director module (needed for prompt writing on resume)
     if characters:
@@ -254,7 +264,13 @@ def run(brief: str, project_name: str, log, is_script: bool = False, lazy: bool 
             log.info("  Shot: %s | Mood: %s", scene.get("shot_type", "?"), scene.get("mood", "?"))
 
             candidates = generate_keyframes(
-                client, scene, characters, project_dir, brief=brief
+                client,
+                scene,
+                characters,
+                project_dir,
+                character_references,
+                project_references,
+                brief=brief,
             )
             scene["keyframe_candidates"] = candidates
             scene.pop("rejection_notes", None)  # Clear rejection after regen
@@ -359,7 +375,9 @@ def run(brief: str, project_name: str, log, is_script: bool = False, lazy: bool 
             try:
                 prompt_id = client.queue_prompt(workflow)
                 history = client.wait_for_completion(prompt_id, timeout=900)
-                raw_output = client.get_output_path(history)
+                raw_output = client.get_output_file(
+                    history, scenes_dir, (".mp4", ".webm", ".avi", ".mov")
+                )
             except (RuntimeError, TimeoutError) as e:
                 log.error("  Take %d failed: %s", take_num, e)
                 scene["takes"].append({"take": take_num, "status": "failed", "error": str(e)})

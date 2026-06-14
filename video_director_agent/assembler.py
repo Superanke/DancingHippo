@@ -4,7 +4,7 @@ import os
 import subprocess
 import tempfile
 import logging
-import ollama
+import ollama_client
 
 from config import OLLAMA_MODEL_FAST, EVAL_TOKEN_BUDGET, FFMPEG_PATH, FFPROBE_PATH
 from evaluator import extract_frames
@@ -107,7 +107,7 @@ Respond ONLY with valid JSON:
 "problem_scenes": [list of scene numbers that need work, or empty list]}}"""
 
     log.info("Running final continuity eval on assembled film (%d frames)...", len(frames))
-    response = ollama.chat(
+    response = ollama_client.chat(
         model=OLLAMA_MODEL_FAST,
         messages=[{"role": "user", "content": eval_prompt, "images": frames}],
         options={"num_predict": EVAL_TOKEN_BUDGET},

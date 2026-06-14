@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DancingHippo Studio</title>
+    <link rel="stylesheet" href="/static/app.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">DH</div>
+          <div>
+            <h1>DancingHippo</h1>
+            <p>Local AI Film Studio</p>
+          </div>
+        </div>
+
+        <button id="newProjectButton" class="nav-button active" type="button">New Production</button>
+        <div class="sidebar-section">
+          <div class="section-title">Projects</div>
+          <div id="projectList" class="project-list"></div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h2 id="pageTitle">Production Board</h2>
+            <p id="pageSubtitle">Plan, review, generate, and assemble without guessing what is happening.</p>
+          </div>
+          <div class="health-strip">
+            <div id="comfyStatus" class="health-item">ComfyUI</div>
+            <div id="ollamaStatus" class="health-item">Ollama</div>
+            <div id="modelStatus" class="health-item">Model</div>
+          </div>
+        </header>
+
+        <section class="flow-rail" aria-label="Production steps">
+          <div class="flow-step" data-step="planning">
+            <span>1</span>
+            <strong>Script Plan</strong>
+            <small>Scenes and timing</small>
+          </div>
+          <div class="flow-step" data-step="storyboard">
+            <span>2</span>
+            <strong>Storyboard</strong>
+            <small>Keyframe review</small>
+          </div>
+          <div class="flow-step" data-step="video">
+            <span>3</span>
+            <strong>Video Takes</strong>
+            <small>LTX generation</small>
+          </div>
+          <div class="flow-step" data-step="final">
+            <span>4</span>
+            <strong>Final Film</strong>
+            <small>Assembly</small>
+          </div>
+        </section>
+
+        <section class="panel final-panel" hidden>
+          <div class="panel-header">
+            <h3>Final Film</h3>
+            <span id="finalStatus">Not assembled</span>
+          </div>
+          <div id="finalFilm"></div>
+        </section>
+
+        <div class="main-grid">
+          <section class="panel compose-panel">
+            <div class="panel-header">
+              <h3>Production Brief</h3>
+              <button id="loadLatestButton" class="secondary-button" type="button">Load Latest</button>
+            </div>
+            <label class="field-label" for="projectName">Project name</label>
+            <input id="projectName" class="text-input" type="text" value="">
+
+            <label class="field-label" for="briefText">Brief or script</label>
+            <textarea id="briefText" class="brief-input"></textarea>
+
+            <div class="project-reference-panel">
+              <div class="reference-panel-head">
+                <div>
+                  <strong>Project References</strong>
+                  <small id="projectReferenceStatus">No references added.</small>
+                </div>
+                <button id="uploadReferenceButton" class="secondary-button" type="button">Add Reference</button>
+              </div>
+              <div class="reference-form">
+                <label><span>Type</span><select id="referenceKind"><option value="character">Character</option><option value="style">Visual Style</option><option value="location">Location</option><option value="prop">Prop</option></select></label>
+                <label><span>Label</span><input id="referenceLabel" type="text" placeholder="Lead character, 1965 office, noir style"></label>
+                <label><span>Image</span><input id="referenceFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+              </div>
+              <div id="projectReferenceList" class="project-reference-list"></div>
+            </div>
+
+            <div class="settings-grid">
+              <label><span>Takes</span><input id="takesPerScene" type="number" min="1" max="10" value="1"></label>
+              <label><span>Min sec</span><input id="sceneMin" type="number" min="1" max="30" value="4"></label>
+              <label><span>Max sec</span><input id="sceneMax" type="number" min="2" max="120" value="20"></label>
+              <label><span>Keyframe</span><select id="keyframeSize"><option value="1024x512">1024 x 512</option><option value="2048x1024">2048 x 1024</option></select></label>
+              <label><span>Video</span><select id="videoSize"><option value="1024x432">1024 x 432</option><option value="768x320">768 x 320</option></select></label>
+              <label><span>Final language</span><select id="outputLanguage"><option value="simplified_chinese">Chinese</option><option value="english">English</option></select></label>
+            </div>
+
+            <div class="toggles">
+              <label><input id="skipKeyframeEval" type="checkbox"> Skip keyframe evaluation</label>
+              <label><input id="lazyMode" type="checkbox"> Auto-select everything</label>
+              <label><input id="useKeyframes" type="checkbox" checked> Use storyboard keyframes</label>
+            </div>
+
+            <div class="action-row">
+              <button id="startButton" class="primary-button" type="button">Start Production</button>
+              <button id="approveStoryboardButton" class="secondary-button" type="button">Approve Storyboard</button>
+              <button id="generateVideosButton" class="secondary-button" type="button">Generate Videos</button>
+              <button id="assembleButton" class="secondary-button" type="button">Assemble Selected Takes</button>
+              <button id="openFolderButton" class="secondary-button" type="button">Open Output Folder</button>
+              <button id="openFinalButton" class="secondary-button" type="button">Open Final Video</button>
+            </div>
+            <p id="actionMessage" class="action-message"></p>
+          </section>
+
+          <section class="panel status-panel">
+            <div class="panel-header">
+              <h3>Live Status</h3>
+              <span id="phaseBadge" class="phase-badge">Idle</span>
+            </div>
+            <div id="currentProjectSummary" class="summary-grid"></div>
+            <div class="progress-card">
+              <div class="progress-copy">
+                <strong id="progressTitle">Waiting</strong>
+                <span id="progressDetail">Load a project to see production progress.</span>
+              </div>
+              <div class="progress-track">
+                <div id="progressFill" class="progress-fill"></div>
+              </div>
+            </div>
+            <div class="log-box" id="logBox"></div>
+          </section>
+        </div>
+
+        <section class="panel bible-panel">
+          <div class="panel-header">
+            <h3>Production Bible</h3>
+            <span id="bibleStatus">No project loaded</span>
+          </div>
+          <div id="bibleGrid" class="bible-grid"></div>
+        </section>
+
+        <section class="panel review-panel">
+          <div class="panel-header">
+            <h3>Scene Review</h3>
+            <span id="sceneCountLabel">No project loaded</span>
+          </div>
+          <div id="sceneList" class="scene-list"></div>
+        </section>
+
+      </main>
+    </div>
+    <script src="/static/app.js?v=20260613-error-shell"></script>
+  </body>
+</html>

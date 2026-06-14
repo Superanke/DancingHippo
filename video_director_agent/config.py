@@ -14,10 +14,13 @@ _DEFAULTS = {
     "ollama_host": "http://localhost:11434",
     "ollama_model_creative": "gemma4:26b",
     "ollama_model_fast": "gemma4:e4b",
+    "ollama_request_timeout_sec": 90,
+    "ollama_vision_max_edge": 768,
     "kf_width": 2048,
     "kf_height": 1024,
     "video_width": 1024,
     "video_height": 432,
+    "output_language": "english",
 }
 
 
@@ -83,6 +86,9 @@ OLLAMA_HOST = _get("ollama_host")
 OLLAMA_MODEL_CREATIVE = _get("ollama_model_fast")   # Using fast model for everything — 26B has JSON issues
 OLLAMA_MODEL_FAST = _get("ollama_model_fast")
 OLLAMA_MODEL = OLLAMA_MODEL_FAST
+OLLAMA_REQUEST_TIMEOUT_SEC = int(_get("ollama_request_timeout_sec"))
+OLLAMA_VISION_MAX_EDGE = int(_get("ollama_vision_max_edge"))
+OUTPUT_LANGUAGE = _get("output_language")
 
 # --- LTX-AV (video generation) ---
 LTX_FPS = 24

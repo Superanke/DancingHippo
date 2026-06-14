@@ -372,7 +372,9 @@ class ReviewerGUI:
                 try:
                     prompt_id = client.queue_prompt(workflow)
                     history = client.wait_for_completion(prompt_id, timeout=900)
-                    raw_output = client.get_output_path(history)
+                    raw_output = client.get_output_file(
+                        history, scenes_dir, (".mp4", ".webm", ".avi", ".mov")
+                    )
                 except Exception as e:
                     log.error("Redo take %d failed: %s", take_num, e)
                     new_takes.append({"take": take_num, "status": "failed", "error": str(e)})

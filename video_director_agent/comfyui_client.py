@@ -6,6 +6,8 @@ import copy
 import os
 import time
 import logging
+import urllib.parse
+import urllib.error
 import urllib.request
 import websocket
 
@@ -86,8 +88,14 @@ class ComfyUIClient:
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             method="POST",
         )
-        with urllib.request.urlopen(req) as resp:
-            result = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"ComfyUI /upload/image failed: status={e.code}, body={body}"
+            ) from e
         uploaded_name = result.get("name", filename)
         log.info("Uploaded image to ComfyUI: %s", uploaded_name)
         return uploaded_name
@@ -105,8 +113,14 @@ class ComfyUIClient:
             data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req) as resp:
-            result = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"ComfyUI /prompt failed: status={e.code}, body={body}"
+            ) from e
         prompt_id = result["prompt_id"]
         log.info("Queued prompt %s", prompt_id)
         return prompt_id
@@ -180,23 +194,59 @@ class ComfyUIClient:
         return data.get(prompt_id, {})
 
     @staticmethod
-    def get_output_path(history: dict, output_dir: str = COMFYUI_OUTPUT_DIR) -> str:
-        """Extract the video file path from a completed history dict."""
+    def _find_output_item(history: dict, suffixes: tuple[str, ...]) -> dict:
+        """Extract the first matching ComfyUI output item from history."""
         outputs = history.get("outputs", {})
         for node_id, node_output in outputs.items():
-            # Check all possible output keys: SaveVideo uses "images" with animated flag,
-            # VHS_VideoCombine uses "gifs" or "videos"
             for key in ("images", "videos", "gifs"):
-                if key in node_output:
-                    items = node_output[key]
-                    for item in items:
-                        if not isinstance(item, dict):
-                            continue
-                        filename = item.get("filename", "")
-                        if filename.endswith((".mp4", ".webm", ".avi", ".mov")):
-                            subfolder = item.get("subfolder", "")
-                            return os.path.join(output_dir, subfolder, filename)
-        raise ValueError("No video output found in history")
+                if key not in node_output:
+                    continue
+                items = node_output[key]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    filename = item.get("filename", "")
+                    if filename.endswith(suffixes):
+                        return item
+        raise ValueError(f"No output found for suffixes: {suffixes}")
+
+    @staticmethod
+    def get_output_path(history: dict, output_dir: str = COMFYUI_OUTPUT_DIR) -> str:
+        """Extract the video file path from a completed history dict."""
+        item = ComfyUIClient._find_output_item(history, (".mp4", ".webm", ".avi", ".mov"))
+        subfolder = item.get("subfolder", "")
+        return os.path.join(output_dir, subfolder, item["filename"])
+
+    def download_output_item(self, item: dict, local_dir: str) -> str:
+        """Download an output file from ComfyUI's /view API into local_dir."""
+        os.makedirs(local_dir, exist_ok=True)
+        filename = item.get("filename", "")
+        if not filename:
+            raise ValueError(f"ComfyUI output item has no filename: {item}")
+
+        params = {
+            "filename": filename,
+            "subfolder": item.get("subfolder", ""),
+            "type": item.get("type", "output"),
+        }
+        url = f"http://{self.host}/view?{urllib.parse.urlencode(params)}"
+        local_path = os.path.join(local_dir, os.path.basename(filename))
+        log.info("Downloading ComfyUI output: %s", url)
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            data = resp.read()
+        with open(local_path, "wb") as f:
+            f.write(data)
+        return local_path
+
+    def get_output_file(self, history: dict, local_dir: str,
+                        suffixes: tuple[str, ...]) -> str:
+        """Return a local file for a ComfyUI output, downloading it if needed."""
+        item = self._find_output_item(history, suffixes)
+        subfolder = item.get("subfolder", "")
+        local_comfy_path = os.path.join(COMFYUI_OUTPUT_DIR, subfolder, item["filename"])
+        if os.path.exists(local_comfy_path):
+            return local_comfy_path
+        return self.download_output_item(item, local_dir)
 
 
 # ── Workflow helpers ───────────────────────────────────────────────────────
@@ -363,13 +413,16 @@ def _detect_i2v_nodes(wf: dict) -> dict:
         if int_nodes:
             detected["frames"] = int_nodes[0]
 
-    # Find width/height nodes by title
+    # Find width/height/fps nodes by title
     width_node = _find_node_by_title(wf, "Width")
     height_node = _find_node_by_title(wf, "Height")
+    fps_node = _find_node_by_title(wf, "FPS")
     if width_node:
         detected["width"] = width_node
     if height_node:
         detected["height"] = height_node
+    if fps_node:
+        detected["fps"] = fps_node
 
     # Find LoadImage node (for the keyframe input)
     load_nodes = _find_nodes_by_class(wf, "LoadImage")
@@ -421,6 +474,8 @@ def build_i2v_workflow(template: dict, prompt_text: str, frames: int, seed: int,
         wf[nodes["width"]]["inputs"]["value"] = VIDEO_WIDTH
     if "height" in nodes:
         wf[nodes["height"]]["inputs"]["value"] = VIDEO_HEIGHT
+    if "fps" in nodes:
+        wf[nodes["fps"]]["inputs"]["value"] = LTX_FPS
 
     # Set the keyframe image
     if "load_image" in nodes:

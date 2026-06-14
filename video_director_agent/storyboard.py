@@ -147,14 +147,14 @@ class StoryboardGUI:
 
             # Thumbnail
             try:
-                img = Image.open(cand_path)
+                img = Image.open(cand_path).convert("RGB")
                 img.thumbnail((280, 160), Image.LANCZOS)
-                tk_img = ImageTk.PhotoImage(img)
+                tk_img = ImageTk.PhotoImage(img, master=self.root)
                 lbl = ttk.Label(frame, image=tk_img)
                 lbl.image = tk_img
                 lbl.pack()
-            except Exception:
-                ttk.Label(frame, text="[no preview]").pack()
+            except Exception as e:
+                ttk.Label(frame, text=f"[no preview: {e}]", wraplength=270).pack()
 
             # Eval info
             char_acc = ev.get("character_accuracy", "?")
